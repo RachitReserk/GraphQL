@@ -7,6 +7,9 @@ mongoose.set('strictQuery', false)
 
 const Book = require('./models/Book')
 const Author = require('./models/Author')
+const User = require('./models/User')
+const jwt = require('jsonwebtoken')
+
 
 require('dotenv').config()
 const MONGODB_URI = process.env.MONGODB_URI
@@ -30,6 +33,26 @@ const typeDefs = `
       name: String!
       setBornTo: Int!
     ): Author
+    
+    createUser(
+    username: String!
+    favouriteGenre: String!
+  ): User
+
+  login(
+    username: String!
+    password: String!
+  ): Token
+  }
+
+  type User {
+  username: String!
+  favouriteGenre: String!
+  id: ID!
+  }
+
+  type Token {
+    value: String!
   }
 
   type Author {
@@ -49,6 +72,7 @@ const typeDefs = `
 
   type Query {
     bookCount: Int!
+    me: User
     authorCount: Int!
     allBooks(author: String, genre: String): [Book]
     allAuthors: [Author!]!
@@ -59,7 +83,9 @@ const resolvers = {
   Query: {
     bookCount: async () => await Book.countDocuments(),
     authorCount: async () => await Author.countDocuments(),
-    
+    me: (root, args, context) => {
+      return context.currentUser
+    },
     allBooks: async (root, args) => {
       let filter = {}
       if (args.genre) filter.genres = args.genre
@@ -115,11 +141,61 @@ const resolvers = {
         { new: true }
       )
       return author
-    }
+    },
+
+    createUser: async (root, args) => {
+      const user = new User({ username: args.username , favouriteGenre: args.favouriteGenre})
+  
+      return user.save()
+        .catch(error => {
+          throw new GraphQLError('Creating the user failed', {
+            extensions: {
+              code: 'BAD_USER_INPUT',
+              invalidArgs: args.username,
+              error
+            }
+          })
+        })
+    },
+
+    login: async (root, args) => {
+      const user = await User.findOne({ username: args.username })
+  
+      if ( !user || args.password !== 'secret' ) {   // the objective here to learn graphQL ,so slacked off with password
+        throw new GraphQLError('wrong credentials', {
+          extensions: {
+            code: 'BAD_USER_INPUT'
+          }
+        })        
+      }
+  
+      const userForToken = {
+        username: user.username,
+        favouriteGenre: user.favouriteGenre,
+        id: user._id,
+      }
+  
+      return { value: jwt.sign(userForToken, "someSecret") }  //slacked off for the sake of learning.
+    },
   }
 }
 
 const server = new ApolloServer({ typeDefs, resolvers })
 
-startStandaloneServer(server, { listen: { port: 4000 } })
-  .then(({ url }) => console.log(`Server ready at ${url}`))
+startStandaloneServer(server, {
+  listen: { port: 4000 },
+
+  context: async ({ req, res }) => {
+    const auth = req ? req.headers.authorization : null
+    if (auth && auth.startsWith('Bearer ')) {
+      const decodedToken = jwt.verify(
+        auth.substring(7), "someSecret"
+      )
+      const currentUser = await User
+        .findById(decodedToken.id)
+      return { currentUser }
+    }
+  },
+}).then(({ url }) => {
+  console.log(`Server ready at ${url}`)
+})
